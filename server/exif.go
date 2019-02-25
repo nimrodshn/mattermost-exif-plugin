@@ -16,7 +16,7 @@ import (
 const (
 	MARKER_PREFIX   = 0xFF
 	APP1_MARKER     = 0xE1
-	FIELD_SIZE      = 12
+	TAG_SIZE        = 12
 	IFD_OFFSET_SIZE = 4
 )
 
@@ -35,7 +35,7 @@ func (p *Plugin) FileWillBeUploaded(c *plugin.Context, info *model.FileInfo, fil
 	return p.discardExif(info, file, output)
 }
 
-// discardExif attempts to decode an image file and the encode it back - by that removing the exif metdata.
+// naiveDiscardExif attempts to decode an image file and the encode it back - by that removing the exif metdata.
 func (p *Plugin) naiveDiscardExif(info *model.FileInfo, file io.Reader, output io.Writer) (*model.FileInfo, string) {
 	im, _, err := image.Decode(file)
 	if err != nil {
@@ -51,10 +51,8 @@ func (p *Plugin) naiveDiscardExif(info *model.FileInfo, file io.Reader, output i
 	return info, ""
 }
 
-// discardExif attempts to decode an image file and the encode it back - by that removing the exif metdata.
+// discardExif attempts to remove the exif IFD's from an image file.
 func (p *Plugin) discardExif(info *model.FileInfo, file io.Reader, output io.Writer) (*model.FileInfo, string) {
-	p.API.LogInfo("Started reading data")
-
 	raw, err := ioutil.ReadAll(file)
 	if err != nil {
 		// Ignore unexpected EOF errors.
@@ -71,27 +69,23 @@ func (p *Plugin) discardExif(info *model.FileInfo, file io.Reader, output io.Wri
 	}
 
 	p.API.LogInfo(fmt.Sprintf("The offset of the first IFD: %d", ifdOffset))
-	p.API.LogInfo(fmt.Sprintf("The byte order is: %s", byteOrder.String()))
 
-	ifdReader := bytes.NewReader(raw)
-	if _, err := ifdReader.Seek(int64(ifdOffset), io.SeekStart); err != nil {
-		p.API.LogError("Could not find first IFD." + err.Error())
-	}
+	ifdReader := bytes.NewReader(raw[ifdOffset:])
 
+	// Retrieve the tag count - the first field in the IFD.
 	var tagCount uint16
 	if err := binary.Read(ifdReader, byteOrder, &tagCount); err != nil {
 		p.API.LogError("Could not read the tag count for the EXIF IFD." + err.Error())
 		return nil, fmt.Sprintf("Could not read the tag count for the EXIF IFD.")
 	}
 
-	p.API.LogInfo(fmt.Sprintf("Number of tags in IFD: %d", tagCount))
+	// The end of the IFD block is the size of the number of tags * tag size (which is 12 bytes.)
+	ifdReader.Seek(int64(tagCount*TAG_SIZE+IFD_OFFSET_SIZE), io.SeekCurrent)
+	exifdEnd := ifdReader.Len()
 
-	ifdReader.Seek(int64(tagCount*FIELD_SIZE+IFD_OFFSET_SIZE), io.SeekCurrent)
-	ifdEnd := ifdReader.Len()
+	output.Write(append(raw[:ifdOffset], raw[exifdEnd:]...))
 
-	output.Write(append(raw[:ifdOffset], raw[ifdEnd:]...))
-
-	p.API.LogInfo("Processed a new EXIF image.")
+	p.API.LogInfo("Succesfuly processed a new image.")
 	return info, ""
 }
 
@@ -105,8 +99,6 @@ func (p *Plugin) parseImageHeaders(raw []byte) (ifdOffset uint32, dataLength int
 			break
 		}
 	}
-
-	p.API.LogInfo(fmt.Sprintf("Found APP1 section in %d", markerOffset))
 
 	// Create a new buffer after the APP1 markers to read the rest of the headers from.
 	buff := bytes.NewBuffer(raw[markerOffset+2:])
