@@ -14,12 +14,20 @@ import (
 )
 
 const (
-	MARKER_PREFIX   = 0xFF
-	APP1_MARKER     = 0xE1
-	TAG_SIZE        = 12
+	// APP1 marker prefix.
+	MARKER_PREFIX = 0xFF
+
+	// APP1 marker.
+	APP1_MARKER = 0xE1
+
+	// The size of each tag in a single IFD.
+	TAG_SIZE = 12
+
+	// the size of the offset field in the IFD.
 	IFD_OFFSET_SIZE = 4
 )
 
+// The exif identifier.
 var EXIF_IDENT = []byte{'E', 'x', 'i', 'f', 0x00, 0x00}
 
 // FileWillBeUploaded is invoked when a file is uploaded, but before it is committed to backing store.
@@ -111,8 +119,7 @@ func (p *Plugin) parseImageHeaders(raw []byte) (ifdOffset uint32, dataLength int
 
 	// check exif identifier (four bytes for 'EXIF' and two padding bytes.)
 	exifHeader := make([]byte, 6)
-	_, err = buff.Read(exifHeader)
-	if !bytes.Equal(exifHeader, append([]byte("Exif"), 0x00, 0x00)) || err != nil {
+	if _, err = buff.Read(exifHeader); err != nil || !bytes.Equal(exifHeader, EXIF_IDENT) {
 		p.API.LogError("An error occurred while attempting to find EXIF ident code.")
 		err = fmt.Errorf("an error occurred while attempting to find EXIF ident code: %v", err)
 		return
@@ -130,14 +137,14 @@ func (p *Plugin) parseImageHeaders(raw []byte) (ifdOffset uint32, dataLength int
 	// or "MM" (0x4d4d) - BigEndian
 	// depending on the machine.
 	// (See: http://www.cipa.jp/std/documents/e/DC-008-2012_E.pdf p.19 for details.)
-	if string(bo) == "II" {
+	switch string(bo) {
+	case "II":
 		byteOrder = binary.LittleEndian
-	} else if string(bo) == "MM" {
+	case "MM":
 		byteOrder = binary.BigEndian
-	} else {
+	default:
 		p.API.LogError("Could not read tiff byte order from tiff header.")
 		err = fmt.Errorf("could not read tiff byte order from tiff header.")
-		return
 	}
 
 	// The TIFF header keeps a 2-byte number (0x002A) as padding.
@@ -148,10 +155,9 @@ func (p *Plugin) parseImageHeaders(raw []byte) (ifdOffset uint32, dataLength int
 		return
 	}
 
-	// load offset to first IFD
+	// load offset to first IFD (The EXIF IFD: see http://www.exif.org/Exif2-2.PDF p.15)
 	ifdOffsetBytes := make([]byte, 4)
-	_, err = buff.Read(ifdOffsetBytes)
-	if err != nil {
+	if _, err = buff.Read(ifdOffsetBytes); err != nil {
 		p.API.LogError("An error occurred while attempting to find the first IFD offset.")
 		err = fmt.Errorf("an error occurred while attempting to find the first IFD offset: %v", err)
 		return
