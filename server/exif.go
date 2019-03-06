@@ -15,20 +15,29 @@ import (
 
 const (
 	// APP1 marker prefix.
-	MARKER_PREFIX = 0xFF
+	markerPrefix = 0xFF
 
 	// APP1 marker.
-	APP1_MARKER = 0xE1
+	appMarker = 0xE1
 
 	// The size of each tag in a single IFD.
-	TAG_SIZE = 12
+	tagSize = 12
 
-	// the size of the offset field in the IFD.
-	IFD_OFFSET_SIZE = 4
+	// The size of the offset field in the IFD.
+	ifdOffsetSize = 4
+
+	// The size of the byte order field in IFD in bytes.
+	byteOrderSize = 2
+
+	// The size of the data length field in the EXIF headers in bytes.
+	dataLenghtSize = 2
+
+	// the size of the tag count field in the IFD.
+	tagCountLenSize = 2
 )
 
 // The exif identifier.
-var EXIF_IDENT = []byte{'E', 'x', 'i', 'f', 0x00, 0x00}
+var exifIdent = []byte{'E', 'x', 'i', 'f', 0x00, 0x00}
 
 // FileWillBeUploaded is invoked when a file is uploaded, but before it is committed to backing store.
 // Read from file to retrieve the body of the uploaded file.
@@ -40,7 +49,7 @@ var EXIF_IDENT = []byte{'E', 'x', 'i', 'f', 0x00, 0x00}
 // Note that this method will be called for files uploaded by plugins, including the plugin that uploaded the post.
 // FileInfo.Size will be automatically set properly if you modify the file.
 func (p *Plugin) FileWillBeUploaded(c *plugin.Context, info *model.FileInfo, file io.Reader, output io.Writer) (*model.FileInfo, string) {
-	return p.discardExif(info, file, output)
+	return p.DiscardExif(info, file, output)
 }
 
 // naiveDiscardExif attempts to decode an image file and the encode it back - by that removing the exif metdata.
@@ -60,7 +69,7 @@ func (p *Plugin) naiveDiscardExif(info *model.FileInfo, file io.Reader, output i
 }
 
 // discardExif attempts to remove the exif IFD's from an image file.
-func (p *Plugin) discardExif(info *model.FileInfo, file io.Reader, output io.Writer) (*model.FileInfo, string) {
+func (p *Plugin) DiscardExif(info *model.FileInfo, file io.Reader, output io.Writer) (*model.FileInfo, string) {
 	raw, err := ioutil.ReadAll(file)
 	if err != nil {
 		// Ignore unexpected EOF errors.
@@ -76,8 +85,6 @@ func (p *Plugin) discardExif(info *model.FileInfo, file io.Reader, output io.Wri
 		return nil, fmt.Sprintf("An error occured while attempting to parse image headers: %v", err)
 	}
 
-	p.API.LogInfo(fmt.Sprintf("The offset of the first IFD: %d", ifdOffset))
-
 	ifdReader := bytes.NewReader(raw[ifdOffset:])
 
 	// Retrieve the tag count - the first field in the IFD.
@@ -88,49 +95,60 @@ func (p *Plugin) discardExif(info *model.FileInfo, file io.Reader, output io.Wri
 	}
 
 	// The end of the IFD block is the size of the number of tags * tag size (which is 12 bytes.)
-	ifdReader.Seek(int64(tagCount*TAG_SIZE+IFD_OFFSET_SIZE), io.SeekCurrent)
-	exifdEnd := ifdReader.Len()
+	exifdEnd := uint16(ifdOffset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize
 
 	output.Write(append(raw[:ifdOffset], raw[exifdEnd:]...))
 
-	p.API.LogInfo("Succesfuly processed a new image.")
 	return info, ""
 }
 
 // parseImageHeaders parses the image headers to check that the information in the headers is not corrupted
-// it also return the followig information uppon succesful parsing: the length of the data,
-// the byteOrder and the first image folder directory (IFD) offset.
-func (p *Plugin) parseImageHeaders(raw []byte) (ifdOffset uint32, dataLength int, byteOrder binary.ByteOrder, err error) {
+// it also return the followig information uppon succesful parsing:
+// The first image folder directory (IFD) offset (which is the EXIF IFD - see http://www.exif.org/Exif2-2.PDF p.15).
+// The length of the data.
+// the byteOrder and any error which might occur in the process of parsing the headers.
+func (p *Plugin) parseImageHeaders(raw []byte) (uint32, int, binary.ByteOrder, error) {
 	var markerOffset int
+	var byteOrder binary.ByteOrder
 	for markerOffset = 0; markerOffset < len(raw)-2; markerOffset++ {
 		if p.matchAPPMarker(raw, markerOffset) {
 			break
 		}
 	}
 
+	// Check if markers where not found.
+	if markerOffset == len(raw)-1 {
+		p.API.LogError("an error occurred: Could not find image markers")
+		err := fmt.Errorf("an error occurred: Could not find image markers")
+		return 0, 0, binary.BigEndian, err
+	}
+
 	// Create a new buffer after the APP1 markers to read the rest of the headers from.
 	buff := bytes.NewBuffer(raw[markerOffset+2:])
-	dataLengthBytes := make([]byte, 2)
-	for k := range dataLengthBytes {
-		c, _ := buff.ReadByte()
-		dataLengthBytes[k] = c
+	dataLengthBytes := make([]byte, dataLenghtSize)
+	if n, err := buff.Read(dataLengthBytes); err != nil || n != dataLenghtSize {
+		p.API.LogError("An error occurred while attempting to find data length.")
+		return 0, 0, binary.BigEndian,
+			fmt.Errorf("an error occurred while attempting to find data length: %v", err)
 	}
-	dataLength = int(binary.BigEndian.Uint16(dataLengthBytes)) - 2
+	dataLength := int(binary.BigEndian.Uint16(dataLengthBytes)) - 2
 
 	// check exif identifier (four bytes for 'EXIF' and two padding bytes.)
-	exifHeader := make([]byte, 6)
-	if _, err = buff.Read(exifHeader); err != nil || !bytes.Equal(exifHeader, EXIF_IDENT) {
-		p.API.LogError("An error occurred while attempting to find EXIF ident code.")
-		err = fmt.Errorf("an error occurred while attempting to find EXIF ident code: %v", err)
-		return
+	exifHeader := make([]byte, len(exifIdent))
+	if n, err := buff.Read(exifHeader); err != nil || n != len(exifIdent) {
+		if !bytes.Equal(exifHeader, exifIdent) {
+			p.API.LogError("An error occurred while attempting to find EXIF ident code.")
+			return 0, 0, binary.BigEndian,
+				fmt.Errorf("an error occurred while attempting to find EXIF ident code: %v", err)
+		}
 	}
 
 	// Read byte order from TIFF Header.
-	bo := make([]byte, 2)
-	if _, err = buff.Read(bo); err != nil {
+	bo := make([]byte, byteOrderSize)
+	if n, err := buff.Read(bo); err != nil || n != byteOrderSize {
 		p.API.LogError("An error occurred while attempting to find TIFF header.")
-		err = fmt.Errorf("an error occurred while attempting to find TIFF header: %v", err)
-		return
+		return 0, 0, binary.BigEndian,
+			fmt.Errorf("an error occurred while attempting to find TIFF header: %v", err)
 	}
 
 	// Either "II" (0x4949) - LittleEndian
@@ -143,30 +161,31 @@ func (p *Plugin) parseImageHeaders(raw []byte) (ifdOffset uint32, dataLength int
 	case "MM":
 		byteOrder = binary.BigEndian
 	default:
-		p.API.LogError("Could not read tiff byte order from tiff header.")
-		err = fmt.Errorf("could not read tiff byte order from tiff header.")
+		p.API.LogError("Could not read byte order from tiff header.")
+		return 0, 0, binary.BigEndian,
+			fmt.Errorf("could not read byte order from tiff header")
 	}
 
 	// The TIFF header keeps a 2-byte number (0x002A) as padding.
 	fixedNum := make([]byte, 2)
-	if _, err = buff.Read(fixedNum); err != nil || byteOrder.Uint16(fixedNum) != 42 {
+	if _, err := buff.Read(fixedNum); err != nil || byteOrder.Uint16(fixedNum) != 42 {
 		p.API.LogError("An error occurred while attempting to find TIFF header.")
-		err = fmt.Errorf("an error occurred while attempting to find TIFF header: %v", err)
-		return
+		return 0, 0, binary.BigEndian,
+			fmt.Errorf("an error occurred while attempting to find TIFF header: %v", err)
 	}
 
 	// load offset to first IFD (The EXIF IFD: see http://www.exif.org/Exif2-2.PDF p.15)
-	ifdOffsetBytes := make([]byte, 4)
-	if _, err = buff.Read(ifdOffsetBytes); err != nil {
+	ifdOffsetBytes := make([]byte, ifdOffsetSize)
+	if n, err := buff.Read(ifdOffsetBytes); err != nil || n != ifdOffsetSize {
 		p.API.LogError("An error occurred while attempting to find the first IFD offset.")
-		err = fmt.Errorf("an error occurred while attempting to find the first IFD offset: %v", err)
-		return
+		return 0, 0, binary.BigEndian,
+			fmt.Errorf("an error occurred while attempting to find the first IFD offset: %v", err)
 	}
+	ifdOffset := byteOrder.Uint32(ifdOffsetBytes)
 
-	ifdOffset = byteOrder.Uint32(ifdOffsetBytes)
-	return
+	return ifdOffset, dataLength, byteOrder, nil
 }
 
 func (p *Plugin) matchAPPMarker(raw []byte, offset int) bool {
-	return raw[offset] == MARKER_PREFIX && raw[offset+1] == APP1_MARKER
+	return (raw[offset] == markerPrefix) && (raw[offset+1] == appMarker)
 }
