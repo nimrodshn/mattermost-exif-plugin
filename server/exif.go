@@ -85,17 +85,22 @@ func (p *Plugin) DiscardExif(info *model.FileInfo, file io.Reader, output io.Wri
 		return nil, fmt.Sprintf("An error occured while attempting to parse image headers: %v", err)
 	}
 
-	ifdReader := bytes.NewReader(raw[ifdOffset:])
+	ifdReader := bytes.NewReader(raw)
+	_, err = ifdReader.Seek(int64(ifdOffset), io.SeekStart)
+	if err != nil {
+		p.API.LogError("Could not find the EXIF IFD." + err.Error())
+		return nil, fmt.Sprintf("Could notthe EXIF IFD.")
+	}
 
 	// Retrieve the tag count - the first field in the IFD.
-	var tagCount uint16
+	var tagCount int16
 	if err := binary.Read(ifdReader, byteOrder, &tagCount); err != nil {
 		p.API.LogError("Could not read the tag count for the EXIF IFD." + err.Error())
 		return nil, fmt.Sprintf("Could not read the tag count for the EXIF IFD.")
 	}
 
 	// The end of the IFD block is the size of the number of tags * tag size (which is 12 bytes.)
-	exifdEnd := uint16(ifdOffset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize
+	exifdEnd := int16(ifdOffset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize
 
 	output.Write(append(raw[:ifdOffset], raw[exifdEnd:]...))
 

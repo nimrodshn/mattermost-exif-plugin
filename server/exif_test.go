@@ -5,10 +5,13 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost-server/model"
+	"github.com/mattermost/mattermost-server/plugin"
 )
 
 func TestDiscardExif(t *testing.T) {
-	p := &Plugin{}
+	p := &Plugin{
+		MattermostPlugin: plugin.MattermostPlugin{},
+	}
 
 	testTable := []struct {
 		Input  []byte
@@ -32,6 +35,7 @@ func TestDiscardExif(t *testing.T) {
 				0x00, 0x00,
 				0x00, 0x00,
 				0x00, 0x00,
+				0xFF, 0xFF,
 			},
 			Output: []byte{
 				0x00, 0x00,
@@ -41,6 +45,7 @@ func TestDiscardExif(t *testing.T) {
 				0x4d, 0x4d, // "II" - Litte Endian.
 				0x00, 0x2A, // Fixed 2-bytes.
 				0x00, 0x00, 0x00, 0x14,
+				0xFF, 0xFF,
 			},
 		},
 	}
