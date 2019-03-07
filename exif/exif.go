@@ -139,10 +139,10 @@ func parseImageHeaders(raw []byte) (uint32, int, binary.ByteOrder, error) {
 		return 0, 0, binary.BigEndian,
 			fmt.Errorf("an error occurred while attempting to find the first IFD offset: %v", err)
 	}
-
 	ifdOffset := byteOrder.Uint32(ifdOffsetBytes)
 
 	// the if the offset is 0x0008 it comes right after the header.
+	// See http://www.exif.org/Exif2-2.PDF p.10
 	if ifdOffset == 8 {
 		ifdOffset = uint32(len(raw) - buff.Len())
 	}
@@ -162,4 +162,36 @@ func locateAPPMarker(raw []byte) (int, error) {
 
 func foundAPPMarker(raw []byte, offset int) bool {
 	return (raw[offset] == markerPrefix) && (raw[offset+1] == appMarker)
+}
+
+func purgeDirs(raw []byte, ifdOffset uint32, byteOrder binary.ByteOrder) ([]byte, error) {
+	ifdReader := bytes.NewReader(raw[ifdOffset:])
+	result := raw[ifdOffset:]
+	var offset int64
+	for offset != 0 {
+		// Retrieve the tag count - the first field in the IFD.
+		var tagCount int16
+		if err := binary.Read(ifdReader, byteOrder, &tagCount); err != nil {
+			return nil, err
+		}
+
+		log.Printf("the number of tags is: %d", tagCount)
+
+		ifdReader.Seek(int64(tagCount*tagSize), io.SeekCurrent)
+		// Find the offset to the next ifd.
+		if err := binary.Read(ifdReader, byteOrder, &offset); err != nil {
+			return nil, err
+		}
+		// The end of the IFD block is the size of the number of tags * tag size (which is 12 bytes.)
+		exifdEnd := int16(ifdOffset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize
+		result = append(result, raw[exifdEnd:]...)
+
+		if ifdReader.Len() == 0 {
+			return nil, fmt.Errorf("Offset past EOF")
+		}
+
+		ifdReader.Seek(offset, io.SeekStart)
+	}
+
+	return result, nil
 }
