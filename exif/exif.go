@@ -52,24 +52,24 @@ func Discard(file io.Reader, output io.Writer) error {
 	}
 	log.Printf("The offset to the EXIF IFD is %d:", ifdOffset)
 
-	ifdReader := bytes.NewReader(raw[ifdOffset:])
+	// ifdReader := bytes.NewReader(raw[ifdOffset:])
 
-	// Retrieve the tag count - the first field in the IFD.
-	var tagCount int16
-	if err := binary.Read(ifdReader, byteOrder, &tagCount); err != nil {
-		return err
-	}
+	// // Retrieve the tag count - the first field in the IFD.
+	// var tagCount int16
+	// if err := binary.Read(ifdReader, byteOrder, &tagCount); err != nil {
+	// 	return err
+	// }
 
-	log.Printf("the number of tags is: %d", tagCount)
+	// log.Printf("the number of tags is: %d", tagCount)
+
+	// The end of the IFD block is the size of the number of tags * tag size (which is 12 bytes.)
+	// exifdEnd := int16(ifdOffset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize
+	// output.Write(append(raw[:ifdOffset], raw[exifdEnd:]...))
 
 	result, err := purgeDirs(raw, ifdOffset, byteOrder)
 	if err != nil {
 		return err
 	}
-
-	// The end of the IFD block is the size of the number of tags * tag size (which is 12 bytes.)
-	// exifdEnd := int16(ifdOffset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize
-	// output.Write(append(raw[:ifdOffset], raw[exifdEnd:]...))
 
 	output.Write(result)
 
@@ -173,9 +173,7 @@ func foundAPPMarker(raw []byte, offset int) bool {
 func purgeDirs(raw []byte, ifdOffset uint32, byteOrder binary.ByteOrder) ([]byte, error) {
 	ifdReader := bytes.NewReader(raw)
 	result := raw
-	var numOfBytesDiscarded int16
 	var offset uint32
-	numOfBytesDiscarded = 0
 	offset = ifdOffset
 	for offset != 0 {
 		// Retrieve the tag count - the first field in the IFD.
@@ -195,19 +193,24 @@ func purgeDirs(raw []byte, ifdOffset uint32, byteOrder binary.ByteOrder) ([]byte
 
 		log.Printf("the offset to the next ifd is: %d", offset)
 
-		log.Printf("Number of bytes discarede thus far: %d", numOfBytesDiscarded)
+		if offset > uint32(len(raw)) || offset == 0 {
+			break
+		}
 
 		// The end of the IFD block is the size of the number of tags * tag size (which is 12 bytes.)
-		exifdEnd := int16(ifdOffset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize - numOfBytesDiscarded
-		ifdOffset := int16(ifdOffset) - numOfBytesDiscarded
+		exifdEnd := int16(offset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize
+		ifdOffset := int16(offset)
 
-		numOfBytesDiscarded += tagCountLenSize + tagCount*tagSize + ifdOffsetSize
-		result = append(result[ifdOffset:], raw[exifdEnd:]...)
+		numOfBytesDiscarded := tagCountLenSize + tagCount*tagSize + ifdOffsetSize
+		filler := make([]byte, numOfBytesDiscarded)
+		result = append(result[:ifdOffset], filler...)
+		result = append(result[:exifdEnd], raw[exifdEnd:]...)
+
+		log.Printf("Number of bytes discarede thus far: %d", numOfBytesDiscarded)
 
 		if ifdReader.Len() == 0 {
 			return nil, fmt.Errorf("Offset past EOF")
 		}
-
 	}
 
 	return result, nil
