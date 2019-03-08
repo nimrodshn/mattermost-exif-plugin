@@ -52,21 +52,7 @@ func Discard(file io.Reader, output io.Writer) error {
 	}
 	log.Printf("The offset to the EXIF IFD is %d:", ifdOffset)
 
-	// ifdReader := bytes.NewReader(raw[ifdOffset:])
-
-	// // Retrieve the tag count - the first field in the IFD.
-	// var tagCount int16
-	// if err := binary.Read(ifdReader, byteOrder, &tagCount); err != nil {
-	// 	return err
-	// }
-
-	// log.Printf("the number of tags is: %d", tagCount)
-
-	// The end of the IFD block is the size of the number of tags * tag size (which is 12 bytes.)
-	// exifdEnd := int16(ifdOffset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize
-	// output.Write(append(raw[:ifdOffset], raw[exifdEnd:]...))
-
-	result, err := purgeDirs(raw, ifdOffset, byteOrder)
+	result, err := removeFirstIFD(raw, ifdOffset, byteOrder)
 	if err != nil {
 		return err
 	}
@@ -214,4 +200,20 @@ func purgeDirs(raw []byte, ifdOffset uint32, byteOrder binary.ByteOrder) ([]byte
 	}
 
 	return result, nil
+}
+
+func removeFirstIFD(raw []byte, ifdOffset uint32, byteOrder binary.ByteOrder) ([]byte, error) {
+	ifdReader := bytes.NewReader(raw[ifdOffset:])
+
+	// Retrieve the tag count - the first field in the IFD.
+	var tagCount int16
+	if err := binary.Read(ifdReader, byteOrder, &tagCount); err != nil {
+		return nil, err
+	}
+
+	log.Printf("the number of tags is: %d", tagCount)
+
+	// The end of the IFD block is the size of the number of tags * tag size (which is 12 bytes.)
+	exifdEnd := int16(ifdOffset) + tagCountLenSize + tagCount*tagSize + ifdOffsetSize
+	return append(raw[:ifdOffset], raw[exifdEnd:]...), nil
 }
