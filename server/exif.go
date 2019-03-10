@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -21,7 +22,16 @@ import (
 // Note that this method will be called for files uploaded by plugins, including the plugin that uploaded the post.
 // FileInfo.Size will be automatically set properly if you modify the file.
 func (p *Plugin) FileWillBeUploaded(c *plugin.Context, info *model.FileInfo, file io.Reader, output io.Writer) (*model.FileInfo, string) {
-	return p.DiscardExif(info, file, output)
+	bb := &bytes.Buffer{}
+	// fileinfo, rejection := p.DiscardExif(info, file, bb)
+	fileinfo, rejection := p.naiveDiscardExif(info, file, bb)
+
+	_, typ, err := image.Decode(bytes.NewReader(bb.Bytes()))
+	p.API.LogError(fmt.Sprintf("<><> '%v' '%v'\n", typ, err))
+
+	io.Copy(output, bytes.NewReader(bb.Bytes()))
+
+	return fileinfo, rejection
 }
 
 // naiveDiscardExif attempts to decode an image file and the encode it back - by that removing the exif metdata.
